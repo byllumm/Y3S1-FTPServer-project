@@ -16,11 +16,13 @@
 #define A_RE    0X01
 #define C_SET   0x03
 #define C_UA    0x07
+#define C_I0    0x00
+#define C_I1    0x80
 #define C_RR0   0xAA
 #define C_RR1   0xAB
 #define C_REJ0  0x54
 #define C_REJ1  0x55
-#define C_DISK  0x0B
+#define C_DISC  0x0B
 
 typedef enum {
     START,
@@ -37,11 +39,61 @@ typedef enum {
 
 volatile int alarmEnabled = FALSE;
 volatile int alarmCount = 0;
+int retransmissions = 0;
+int timeout = 0;
+int tramaTx = 0;
+int tramaRx = 0;
+
 
 void alarmHandler(int signal) {
     alarmEnabled = FALSE;
     alarmCount++;
     printf("Alarm #%d received\n", alarmCount);
+}
+
+unsigned char readControlFrame() {
+
+    unsigned char byte;
+    unsigned char controlField = 0;
+
+    FrameState state = START;
+
+    while(state != STOP_STATE && alarmEnabled) {
+
+        if(readByteSerialPort(&byte) != 1) continue;
+
+        switch(state) {
+            case START:
+                if(byte == FLAG) state = FLAG_RCV;
+                break;
+            case FLAG_RCV:
+                if(byte == A_RE) state = A_RCV;
+                else if (byte == FLAG) state = FLAG_RCV;
+                else state = START;
+                break;
+            case A_RCV:
+                if(byte == C_RR0 || byte == C_RR1 || byte == C_REJ0 || byte == C_REJ1) {
+                    state = C_RCV;
+                    controlField = byte;
+                }
+                else if (byte == FLAG) state = FLAG_RCV;
+                else state = START;
+                break;
+            case C_RCV:
+                if(byte == (A_RE ^ controlField)) state = BCC1_OK;
+                else if (byte == FLAG) state = FLAG_RCV;
+                else state = START;
+                break;
+            case BCC1_OK:
+                if(byte == FLAG) state = STOP_STATE;
+                else state = START;
+                break;
+            default:
+                break;
+
+        }
+    }
+    return controlField;
 }
 
 ////////////////////////////////////////////////
@@ -56,6 +108,9 @@ int llopen(LinkLayer connectionParameters)
         perror("openSerialPort");
         exit(-1);
     }
+
+    retransmissions = connectionParameters.nRetransmissions;
+    timeout = connectionParameters.timeout;
 
     unsigned char byte;
     FrameState state = START;
@@ -161,9 +216,74 @@ int llopen(LinkLayer connectionParameters)
 ////////////////////////////////////////////////
 int llwrite(const unsigned char *buf, int bufSize)
 {
-    // TODO: Implement this function
+    if(bufSize > MAX_PAYLOAD_SIZE) return -1;
 
-    return 0;
+    int frameSize = 4 + bufSize + 2;
+    unsigned char *frame = (unsigned char*)malloc(frameSize);
+    
+    frame[0] = FLAG;
+    frame[1] = A_ER;
+    frame[2] = tramaTx ? C_I1 : C_I0;
+    frame[3] = frame[1] ^ frame[2];
+
+    unsigned char BCC2 = buf[0];
+    for(int i = 1; i < bufSize; i++) {
+        BCC2 ^= buf[i];
+    }
+
+    int j = 4;
+
+    for(int i = 0; i < bufSize; i++) {
+        unsigned char byte = buf[i];
+
+        if(byte == FLAG || byte == ESC) {
+            frame = realloc(frame, ++frameSize);
+            frame[j++] = ESC;
+            frame[j++] = byte ^ 0x20;
+        }
+        else {
+            frame[j++] = byte;
+        }
+    }
+
+    if(BCC2 == FLAG || BCC2 == ESC) {
+        frame = realloc(frame, ++frameSize);
+        frame[j++] = ESC;
+        frame[j++] = BCC2 ^ 0x20;
+    }
+    else {
+        frame[j++] = BCC2;
+    }
+
+    frame[j++] = FLAG;
+
+    int retries = retransmissions;
+    int acknowledged = 0;
+
+    while(retries > 0 && !acknowledged) {
+        
+        writeBytesSerialPort(frame, j);
+        alarmEnabled = TRUE;
+        alarm(timeout);
+
+        while(alarmEnabled && !acknowledged) {
+            unsigned char control = readControlFrame();
+            if(control == (tramaTx ? C_RR1 : C_RR0)) {
+                acknowledged = 1;
+                tramaTx = (tramaTx + 1) % 2;
+                alarm(0);
+            }
+            else if (control == (tramaTx ? C_REJ1 : C_REJ0)) {
+                break;
+            }
+        }
+
+        if(!acknowledged) retries--;
+    }
+
+    free(frame);
+    if(acknowledged) return bufSize;
+    else return -1;
 }
 
 ////////////////////////////////////////////////
