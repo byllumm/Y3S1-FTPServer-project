@@ -216,7 +216,10 @@ int llopen(LinkLayer connectionParameters)
 ////////////////////////////////////////////////
 int llwrite(const unsigned char *buf, int bufSize)
 {
-    if(bufSize > MAX_PAYLOAD_SIZE) return -1;
+    if(bufSize > MAX_PAYLOAD_SIZE) {
+        printf("[llwrite] Error: Payload too large (%d bytes > %d)\n", bufSize, MAX_PAYLOAD_SIZE);
+        return -1;
+    }
 
     int frameSize = 4 + bufSize + 2;
     unsigned char *frame = (unsigned char*)malloc(frameSize);
@@ -226,10 +229,14 @@ int llwrite(const unsigned char *buf, int bufSize)
     frame[2] = tramaTx ? C_I1 : C_I0;
     frame[3] = frame[1] ^ frame[2];
 
+    printf("[llwrite] Building frame: A=0x%02X, C=0x%02X, BCC1=0x%02X\n", frame[1], frame[2], frame[3]);
+
     unsigned char BCC2 = buf[0];
     for(int i = 1; i < bufSize; i++) {
         BCC2 ^= buf[i];
     }
+
+    printf("[llwrite] BCC2 without stuffing: BCC2=0x%02X\n", BCC2);
 
     int j = 4;
 
@@ -240,6 +247,7 @@ int llwrite(const unsigned char *buf, int bufSize)
             frame = realloc(frame, ++frameSize);
             frame[j++] = ESC;
             frame[j++] = byte ^ 0x20;
+            printf("[llwrite] Byte stuffing: original=0x%02X -> ESC 0x%02X\n", byte, byte ^ 0x20);
         }
         else {
             frame[j++] = byte;
@@ -250,40 +258,56 @@ int llwrite(const unsigned char *buf, int bufSize)
         frame = realloc(frame, ++frameSize);
         frame[j++] = ESC;
         frame[j++] = BCC2 ^ 0x20;
+        printf("[llwrite] BCC2 stuffed: original=0x%02X -> ESC 0x%02X\n", BCC2, BCC2 ^ 0x20);
     }
     else {
         frame[j++] = BCC2;
     }
 
     frame[j++] = FLAG;
+    printf("[llwrite] Frame complete, total size = %d bytes\n", j);
 
     int retries = retransmissions;
     int acknowledged = 0;
 
     while(retries > 0 && !acknowledged) {
+        printf("[llwrite] Sending frame (try #%d)\n", retransmissions - retries + 1);
         
         writeBytesSerialPort(frame, j);
         alarmEnabled = TRUE;
         alarm(timeout);
+        printf("[llwrite] Waiting for ACK/REJ (timeout = %ds)\n", timeout);
 
         while(alarmEnabled && !acknowledged) {
             unsigned char control = readControlFrame();
             if(control == (tramaTx ? C_RR1 : C_RR0)) {
+                printf("[llwrite] Received RR%d (ACK)\n", tramaTx ? 1 : 0);
                 acknowledged = 1;
                 tramaTx = (tramaTx + 1) % 2;
                 alarm(0);
             }
             else if (control == (tramaTx ? C_REJ1 : C_REJ0)) {
+                printf("[llwrite] Received REJ%d — retransmitting\n", tramaTx ? 1 : 0);
                 break;
             }
         }
 
-        if(!acknowledged) retries--;
+        if(!acknowledged) {
+            retries--;
+            if (retries > 0) printf("[llwrite] Timeout or REJ — retrying (%d retries left)\n", retries);
+            else printf("[llwrite] Failed after %d attempts\n", retransmissions);
+        }
     }
 
     free(frame);
-    if(acknowledged) return bufSize;
-    else return -1;
+    
+    if (acknowledged) {
+        printf("[llwrite] Frame successfully acknowledged!\n");
+        return bufSize;
+    } 
+    else {
+        return -1;
+    }
 }
 
 ////////////////////////////////////////////////
