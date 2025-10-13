@@ -55,8 +55,9 @@ unsigned char readControlFrame() {
 
     unsigned char byte;
     unsigned char controlField = 0;
-
     FrameState state = START;
+
+    printf("[readControlFrame] Waiting for control frame...\n");
 
     while(state != STOP_STATE && alarmEnabled) {
 
@@ -64,28 +65,46 @@ unsigned char readControlFrame() {
 
         switch(state) {
             case START:
-                if(byte == FLAG) state = FLAG_RCV;
+                if (byte == FLAG) {
+                    state = FLAG_RCV;
+                    printf("[readControlFrame] FLAG received (start of frame)\n");
+                }
                 break;
             case FLAG_RCV:
-                if(byte == A_RE) state = A_RCV;
+                if (byte == A_RE) {
+                    state = A_RCV;
+                    printf("[readControlFrame] A=0x%02X (A_RE) received\n", byte);
+                }
                 else if (byte == FLAG) state = FLAG_RCV;
                 else state = START;
                 break;
             case A_RCV:
-                if(byte == C_RR0 || byte == C_RR1 || byte == C_REJ0 || byte == C_REJ1) {
+                if (byte == C_RR0 || byte == C_RR1 || byte == C_REJ0 || byte == C_REJ1) {
                     state = C_RCV;
                     controlField = byte;
+                    const char *type = 
+                        (byte == C_RR0) ? "RR0" :
+                        (byte == C_RR1) ? "RR1" :
+                        (byte == C_REJ0) ? "REJ0" :
+                        (byte == C_REJ1) ? "REJ1" : "UNKNOWN";
+                    printf("[readControlFrame] C=0x%02X (%s) detected\n", byte, type);
                 }
                 else if (byte == FLAG) state = FLAG_RCV;
                 else state = START;
                 break;
             case C_RCV:
-                if(byte == (A_RE ^ controlField)) state = BCC1_OK;
+                if (byte == (A_RE ^ controlField)) {
+                    state = BCC1_OK;
+                    printf("[readControlFrame] BCC1 OK (0x%02X)\n", byte);
+                }
                 else if (byte == FLAG) state = FLAG_RCV;
                 else state = START;
                 break;
             case BCC1_OK:
-                if(byte == FLAG) state = STOP_STATE;
+                if (byte == FLAG) {
+                    state = STOP_STATE;
+                    printf("[readControlFrame] FLAG received — frame complete!\n");
+                }
                 else state = START;
                 break;
             default:
@@ -93,6 +112,10 @@ unsigned char readControlFrame() {
 
         }
     }
+
+    if (state == STOP_STATE) printf("[readControlFrame] Control frame received successfully: 0x%02X\n", controlField);
+    else printf("[readControlFrame] Timeout or alarm triggered — control frame incomplete\n");
+
     return controlField;
 }
 
@@ -103,14 +126,17 @@ int llopen(LinkLayer connectionParameters)
 {
     unsigned char SET[5] = {FLAG, A_ER, C_SET, A_ER ^ C_SET, FLAG};
     unsigned char UA[5] = {FLAG, A_RE, C_UA, A_RE ^ C_UA, FLAG};
+    
+    printf("[llopen] Initializing link on port %s (baud=%d)\n", connectionParameters.serialPort, connectionParameters.baudRate);
 
     if (openSerialPort(connectionParameters.serialPort, connectionParameters.baudRate) < 0){
-        perror("openSerialPort");
+        pperror("[llopen] Error opening serial port");
         exit(-1);
     }
 
     retransmissions = connectionParameters.nRetransmissions;
     timeout = connectionParameters.timeout;
+    printf("[llopen] Parameters: timeout=%ds, retransmissions=%d\n", timeout, retransmissions);
 
     unsigned char byte;
     FrameState state = START;
@@ -126,10 +152,13 @@ int llopen(LinkLayer connectionParameters)
         }
 
         while(retries > 0 && state != STOP_STATE) {
+            printf("[llopen] Sending SET frame (attempt %d of %d)\n", connectionParameters.nRetransmissions - retries + 1, connectionParameters.nRetransmissions);
            
             writeBytesSerialPort(SET, 5);
             alarmEnabled = TRUE;
             alarm(connectionParameters.timeout);
+
+            printf("[llopen] Waiting for UA (timeout = %ds)\n", timeout);
 
             while(alarmEnabled && state != STOP_STATE) {
 
@@ -137,25 +166,40 @@ int llopen(LinkLayer connectionParameters)
 
                 switch (state) {
                     case START:
-                        if (byte == FLAG) state = FLAG_RCV;
+                        if (byte == FLAG) {
+                            state = FLAG_RCV;
+                            printf("[readControlFrame] FLAG received (start of frame)\n");
+                        }
                         break;
                     case FLAG_RCV:
-                        if (byte == A_RE) state = A_RCV;
+                        if (byte == A_RE)  {
+                            state = A_RCV;
+                            printf("[llopen] Received A=0x%02X (expected A_RE)\n", byte);
+                        }
                         else if (byte == FLAG) state = FLAG_RCV;
                         else state = START;
                         break;
                     case A_RCV:
-                        if (byte == C_UA) state = C_RCV;
+                        if (byte == C_UA) {
+                            state = C_RCV;
+                            printf("[llopen] Received C=0x%02X (UA)\n", byte);
+                        }
                         else if (byte == FLAG) state = FLAG_RCV;
                         else state = START;
                         break;
                     case C_RCV:
-                        if (byte == (A_RE ^ C_UA)) state = BCC1_OK;
+                        if (byte == (A_RE ^ C_UA)) {
+                            state = BCC1_OK;
+                            printf("[llopen] BCC1 OK (0x%02X)\n", byte);
+                        }
                         else if (byte == FLAG) state = FLAG_RCV;
                         else state = START;
                         break; 
                     case BCC1_OK:
-                        if(byte == FLAG) state = STOP_STATE;
+                        if (byte == FLAG) {
+                            state = STOP_STATE;
+                            printf("[llopen] UA frame complete! Link established.\n");
+                        }
                         else state = START;
                         break;
                     default:
@@ -164,14 +208,24 @@ int llopen(LinkLayer connectionParameters)
             }
 
             
-            if (state == STOP_STATE) alarm(0);
-            else retries--;
+            if (state == STOP_STATE) {
+                alarm(0);
+            } 
+            else {
+                retries--;
+                printf("[llopen] No UA received (timeout). Retries left: %d\n", retries);
+            }
         }
 
-        if (state != STOP_STATE) return -1;
+        if (state != STOP_STATE) {
+            printf("[llopen] Failed to establish connection after %d attempts.\n", connectionParameters.nRetransmissions);
+            return -1;
+        }
     }
 
     else if (connectionParameters.role == LlRx) {
+
+        printf("[llopen] Waiting for SET frame from transmitter...\n");
         
         while (state != STOP_STATE) {
 
@@ -184,22 +238,34 @@ int llopen(LinkLayer connectionParameters)
                     if (byte == FLAG) state = FLAG_RCV;
                     break;
                 case FLAG_RCV:
-                    if (byte == A_ER) state = A_RCV;
+                    if (byte == A_ER) {
+                        state = A_RCV;
+                        printf("[llopen] Received A=0x%02X (A_ER)\n", byte);
+                    }
                     else if (byte == FLAG) state = FLAG_RCV;
                     else state = START;
                     break;
                 case A_RCV:
-                    if (byte == C_SET) state = C_RCV;
+                    if (byte == C_SET) {
+                        state = C_RCV;
+                        printf("[llopen] Received C=0x%02X (SET)\n", byte);
+                    }
                     else if (byte == FLAG) state = FLAG_RCV;
                     else state = START;
                     break;
                 case C_RCV:
-                    if (byte == (A_ER ^ C_SET)) state = BCC1_OK;
+                    if (byte == (A_ER ^ C_SET)) {
+                        state = BCC1_OK;
+                        printf("[llopen] BCC1 OK (0x%02X)\n", byte);
+                    }
                     else if (byte == FLAG) state = FLAG_RCV;
                     else state = START;
                     break;
                 case BCC1_OK:
-                    if (byte == FLAG) state = STOP_STATE;
+                    if (byte == FLAG) {
+                        state = STOP_STATE;
+                        printf("[llopen] SET frame complete! Sending UA response.\n");
+                    }
                     else state = START;
                     break;
                 default:
@@ -207,7 +273,9 @@ int llopen(LinkLayer connectionParameters)
             }
         }
         writeBytesSerialPort(UA, 5);
+        printf("[llopen] Sent UA frame. Link established.\n");
     }
+    printf("[llopen] Link layer open successful!\n");
     return 0;
 }
 
@@ -280,6 +348,7 @@ int llwrite(const unsigned char *buf, int bufSize)
 
         while(alarmEnabled && !acknowledged) {
             unsigned char control = readControlFrame();
+
             if(control == (tramaTx ? C_RR0 : C_RR1)) {
                 printf("[llwrite] Received RR%d (ACK)\n", tramaTx ? 1 : 0);
                 acknowledged = 1;
@@ -290,6 +359,7 @@ int llwrite(const unsigned char *buf, int bufSize)
                 printf("[llwrite] Received REJ%d — retransmitting\n", tramaTx ? 1 : 0);
                 break;
             }
+            else continue;
         }
 
         if(!acknowledged) {
