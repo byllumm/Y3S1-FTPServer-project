@@ -280,7 +280,7 @@ int llwrite(const unsigned char *buf, int bufSize)
 
         while(alarmEnabled && !acknowledged) {
             unsigned char control = readControlFrame();
-            if(control == (tramaTx ? C_RR1 : C_RR0)) {
+            if(control == (tramaTx ? C_RR0 : C_RR1)) {
                 printf("[llwrite] Received RR%d (ACK)\n", tramaTx ? 1 : 0);
                 acknowledged = 1;
                 tramaTx = (tramaTx + 1) % 2;
@@ -300,7 +300,7 @@ int llwrite(const unsigned char *buf, int bufSize)
     }
 
     free(frame);
-    
+
     if (acknowledged) {
         printf("[llwrite] Frame successfully acknowledged!\n");
         return bufSize;
