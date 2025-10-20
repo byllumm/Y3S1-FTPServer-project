@@ -31,19 +31,18 @@ typedef enum {
     C_RCV,
     BCC1_OK,
     DATA_RCV,
-    ESC_RCV,
     BCC2_OK,
-    STOP_STATE,
-    ERROR_STATE
+    STOP_STATE
 } FrameState;
 
 volatile int alarmEnabled = FALSE;
 volatile int alarmCount = 0;
-int retransmissions = 0;
-int timeout = 0;
 int tramaTx = 0;
 int tramaRx = 0;
 
+int retransmissions = 0;
+int timeout = 0;
+LinkLayerRole role;
 
 void alarmHandler(int signal) {
     alarmEnabled = FALSE;
@@ -75,8 +74,7 @@ unsigned char readControlFrame() {
                     state = A_RCV;
                     printf("[readControlFrame] A=0x%02X (A_RE) received\n", byte);
                 }
-                else if (byte == FLAG) state = FLAG_RCV;
-                else state = START;
+                else if (byte != FLAG) state = START;
                 break;
             case A_RCV:
                 if (byte == C_RR0 || byte == C_RR1 || byte == C_REJ0 || byte == C_REJ1) {
@@ -136,6 +134,7 @@ int llopen(LinkLayer connectionParameters)
 
     retransmissions = connectionParameters.nRetransmissions;
     timeout = connectionParameters.timeout;
+    role = connectionParameters.role;
     printf("[llopen] Parameters: timeout=%ds, retransmissions=%d\n", timeout, retransmissions);
 
     unsigned char byte;
@@ -176,8 +175,7 @@ int llopen(LinkLayer connectionParameters)
                             state = A_RCV;
                             printf("[llopen] Received A=0x%02X (expected A_RE)\n", byte);
                         }
-                        else if (byte == FLAG) state = FLAG_RCV;
-                        else state = START;
+                        else if (byte != FLAG) state = START;
                         break;
                     case A_RCV:
                         if (byte == C_UA) {
@@ -242,8 +240,7 @@ int llopen(LinkLayer connectionParameters)
                         state = A_RCV;
                         printf("[llopen] Received A=0x%02X (A_ER)\n", byte);
                     }
-                    else if (byte == FLAG) state = FLAG_RCV;
-                    else state = START;
+                    else if (byte != FLAG) state = START;
                     break;
                 case A_RCV:
                     if (byte == C_SET) {
@@ -275,6 +272,7 @@ int llopen(LinkLayer connectionParameters)
         writeBytesSerialPort(UA, 5);
         printf("[llopen] Sent UA frame. Link established.\n");
     }
+
     printf("[llopen] Link layer open successful!\n");
     return 0;
 }
@@ -388,14 +386,13 @@ int llread(unsigned char *packet)
     unsigned char byte;
     FrameState state = START;
     unsigned char control = 0;
-    unsigned char BCC2_calc = 0;
     int packetIndex = 0;
     int escapeNext = 0;
-    unsigned char receivedBCC2 = 0;
+    unsigned char BCC2_calc = 0, receivedBCC2 = 0;
 
     printf("[llread] Waiting for information frame...\n");
 
-    while(1) {
+    while(state != STOP_STATE) {
         if(readByteSerialPort(&byte) != 1) continue;
         printf("[llread] Read byte: 0x%02X\n", byte);
 
@@ -467,14 +464,14 @@ int llread(unsigned char *packet)
                     byte ^= 0x20;
                     packet[packetIndex++] = byte;
                     escapeNext = 0;
-                    printf("[llread] Escaped data byte: 0x%02X, BCC2_calc=0x%02X\n", byte, BCC2_calc);
+                    printf("[llread] Escaped data byte: 0x%02X\n", byte, BCC2_calc);
                 }
                 else if(byte == ESC) {
                     escapeNext = 1;
                 }
                 else {
                     packet[packetIndex++] = byte;
-                    printf("[llread] Data byte: 0x%02X, BCC2_calc=0x%02X\n", byte, BCC2_calc);
+                    printf("[llread] Data byte: 0x%02X\n", byte, BCC2_calc);
                 }
                 break;
 
@@ -482,8 +479,6 @@ int llread(unsigned char *packet)
             default:
                 break;
         }
-
-        if(state == STOP_STATE) break;
     }
 
     if(BCC2_calc == receivedBCC2) {
@@ -523,7 +518,179 @@ int llread(unsigned char *packet)
 ////////////////////////////////////////////////
 int llclose()
 {
-    
+    unsigned char DISC_TX[5] = {FLAG, A_ER, C_DISC, A_ER ^ C_DISC, FLAG};
+    unsigned char DISC_RX[5] = {FLAG, A_RE, C_DISC, A_RE ^ C_DISC, FLAG};
+    unsigned char UA[5]      = {FLAG, A_ER, C_UA, A_ER ^ C_UA, FLAG};
+
+    unsigned char byte;
+    FrameState state = START;
+    int retries = retransmissions;
+
+    printf("[llclose] Initiating link termination...\n");
+
+    if(role == LlTx) {
+
+        while (retries > 0 && state != STOP_STATE) {
+            printf("[llclose] Sending DISC (attempt %d of %d)\n", retransmissions - retries + 1, retransmissions);
+
+            writeBytesSerialPort(DISC_TX, 5);
+            alarmEnabled = TRUE;
+            alarm(timeout);
+
+            state = START;
+
+            while (alarmEnabled && state != STOP_STATE) {
+                
+                if(readByteSerialPort(&byte) != 1) continue;
+
+                switch (state) {
+                    case START:
+                        if(byte == FLAG) state = FLAG_RCV;
+                        break;
+
+                    case FLAG_RCV:
+                        if (byte == A_RE) state = A_RCV;
+                        else if (byte != FLAG) state = START;
+                        break;
+                    
+                    case A_RCV:
+                        if (byte == C_DISC) state = C_RCV;
+                        else if (byte == FLAG) state = FLAG_RCV;
+                        else state = START;
+                        break;
+
+                    case C_RCV:
+                        if (byte == (A_RE ^ C_DISC)) state = BCC1_OK;
+                        else if (byte == FLAG) state = FLAG_RCV;
+                        else state = START;
+                        break;
+
+                    case BCC1_OK:
+                        if (byte == FLAG) {
+                            state = STOP_STATE;
+                            printf("[llclose] Received DISC from receiver\n");
+                        }
+                        else state = START;
+                        break;
+
+                    default:
+                        break;
+                }
+            }
+
+            if(state == STOP_STATE) {
+                alarm(0);
+            }
+            else {
+                retries--;
+                printf("[llclose] Timeout waiting for DISC, retries left: %d\n", retries);
+            }
+        }
+
+        if (state != STOP_STATE) {
+            printf("[llclose] Failed to receive DISC after %d attempts.\n", retransmissions);
+            return -1;
+        }
+
+        writeBytesSerialPort(UA, 5);
+        printf("[llclose] Sent UA — disconnection complete.\n");
+    }
+
+    else if (role == LlRx) {
+        printf("[llclose] Waiting for DISC from transmitter...\n");
+        
+        state = START;
+
+        while (state != STOP_STATE) {
+            if (readByteSerialPort(&byte) != 1) continue;
+
+            switch (state) {
+                case START:
+                    if (byte == FLAG) state = FLAG_RCV;
+                    break;
+
+                case FLAG_RCV:
+                    if (byte == A_ER) state = A_RCV;
+                    else if (byte != FLAG) state = START;
+                    break;
+
+                case A_RCV:
+                    if (byte == C_DISC) state = C_RCV;
+                    else if (byte == FLAG) state = FLAG_RCV;
+                    else state = START;
+                    break;
+
+                case C_RCV:
+                    if (byte == (A_ER ^ C_DISC)) state = BCC1_OK;
+                    else if (byte == FLAG) state = FLAG_RCV;
+                    else state = START;
+                    break;
+
+                case BCC1_OK:
+                    if (byte == FLAG) {
+                        state = STOP_STATE;
+                        printf("[llclose] Received DISC from transmitter.\n");
+                    } 
+                    else state = START;
+                    break;
+
+                default:
+                    break;
+            }
+        }
+
+        printf("[llclose] Sending DISC response...\n");
+        writeBytesSerialPort(DISC_RX, 5);
+
+        state = START;
+        printf("[llclose] Waiting for UA from transmitter...\n");
+
+        while (state != STOP_STATE) {
+            if (readByteSerialPort(&byte) != 1) continue;
+
+            switch(state) {
+                case START:
+                    if (byte == FLAG) state = FLAG_RCV;
+                    break;
+
+                case FLAG_RCV:
+                    if (byte == A_ER) state = A_RCV;
+                    else if (byte != FLAG) state = START;
+                    break;
+
+                case A_RCV:
+                    if (byte == C_UA) state = C_RCV;
+                    else if (byte == FLAG) state = FLAG_RCV;
+                    else state = START;
+                    break;
+
+                case C_RCV:
+                    if (byte == (A_ER ^ C_UA)) state = BCC1_OK;
+                    else if (byte == FLAG) state = FLAG_RCV;
+                    else state = START;
+                    break;
+
+                case BCC1_OK:
+                    if(byte == FLAG) {
+                        state = STOP_STATE;
+                        printf("[llclose] Received UA - disconnection complete.\n");
+                    } 
+                    else state = START;
+                    break;
+
+                default:
+                    break;
+            }
+        }
+    }
+
+    closeSerialPort();
+    printf("[llclose] Serial port closed successfully.\n");
+    printf("[llclose] Transmission summary:\n");
+    printf("    - Total retransmissions: %d\n", alarmCount);
+    printf("    - Last frame: tramaTx=%d tramaRx=%d\n", tramaTx, tramaRx);
+    printf("------------------------------------------------------\n");
+    printf("Link layer terminated successfully.\n");
 
     return 0;
 }
