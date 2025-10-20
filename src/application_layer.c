@@ -123,3 +123,46 @@ unsigned char* decodeControlPacket(const unsigned char* packet, unsigned int pac
 
     return filename;
 }
+
+
+unsigned char* encodeDataPacket(const unsigned char* data, unsigned int datasize, unsigned int* packetsize) {
+    if(!data || datasize == 0 || !packetsize) return NULL;
+
+    unsigned char L1 = datasize % 256;
+    unsigned char L2 = datasize / 256;
+
+    *packetsize = 3 + datasize;
+    unsigned char* packet = (unsigned char*)malloc(*packetsize);
+    if(!packet) return NULL;
+
+    unsigned int pos = 0;
+
+    packet[pos++] = 2;
+    packet[pos++] = L2;
+    packet[pos++] = L1;
+
+    memcpy(packet + pos, data, datasize);
+    return packet;
+}
+
+unsigned char* decodeDataPacket(const unsigned char* packet, const unsigned int packetsize, unsigned int* datasize) {
+    if(!packet || packetsize < 3 || !datasize) return NULL;
+
+    unsigned int pos = 0;
+    
+    if(packet[pos++] != 2) return NULL;
+
+    unsigned char L2 = packet[pos++];
+    unsigned char L1 = packet[pos++];
+
+    *datasize = (256 * L2) + L1;
+
+    if(*datasize == 0 || (pos + datasize) > packetsize) return NULL;
+
+    unsigned char* data = (unsigned char*)malloc(*datasize);
+    if(!data) return NULL;
+
+    memcpy(data, packet + pos, *datasize);
+
+    return data;
+}
