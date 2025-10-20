@@ -385,9 +385,99 @@ int llwrite(const unsigned char *buf, int bufSize)
 ////////////////////////////////////////////////
 int llread(unsigned char *packet)
 {
-    // TODO: Implement this function
+    unsigned char *destuffed = (unsigned char*)malloc(MAX_PAYLOAD_SIZE + 3);
+    unsigned char s_frame[5];
+    unsigned char byte;
+    FrameState state = START;
+    unsigned char C, BCC2;
+    int i = 0;
 
-    return 0;
+    s_frame[0] = FLAG;
+    s_frame[1] = A_RE;
+    s_frame[4] = FLAG;
+
+    while(state != STOP_STATE) {
+        if(readByteSerialPort(&byte) != 1) return -1;
+
+        switch(state) {
+            case START:
+                if(byte == FLAG) state = FLAG_RCV;
+                break;
+
+            case FLAG_RCV:
+                if(byte == A_ER) state = A_RCV;
+                else if (byte != FLAG) state = START;
+                break;
+
+            case A_RCV:
+                if(byte == C_I0 || byte == C_I1) {
+                    state = C_RCV;
+                    C = byte;
+                } else if(byte == FLAG) state = FLAG_RCV;
+                else state = START;
+                break;
+
+            case C_RCV:
+                if(byte == (A_ER ^ C)) state = BCC1_OK;
+                else if (byte == FLAG) state = FLAG_RCV;
+                else state = START;
+                break;
+
+            case BCC1_OK:
+                if(byte == ESC) {
+                    state = ESC_RCV;
+                } else if(byte == FLAG){
+                    state = DATA_RCV;
+                } else {
+                    destuffed[i] = byte;
+                    i++;
+                }
+                break;
+
+            case DATA_RCV:
+                BCC2 = destuffed[i - 1];
+                unsigned char BCC2_check = 0;
+                for (int j = 0; j < i - 1; j++){
+                    BCC2_check = BCC2_check ^ destuffed[j];
+                    packet[j] = destuffed[j];
+                }
+                if(BCC2 == BCC2_check){
+                    state = STOP_STATE;
+                    if(C == C_I0){
+                        s_frame[2] = C_RR1;
+                        s_frame[3] = C_RR1 ^ A_RE;
+                    } else {
+                        s_frame[2] = C_RR0;
+                        s_frame[3] = C_RR0 ^ A_RE;
+                    }
+                    writeBytesSerialPort(s_frame, 5);
+                } else {
+                    state = START;
+                    if(C == C_I0){
+                        s_frame[2] = C_REJ0;
+                        s_frame[3] = C_REJ0 ^ A_RE;
+                        writeBytesSerialPort(s_frame, 5);
+                    } else {
+                        s_frame[2] = C_REJ1;
+                        s_frame[3] = C_REJ1 ^ A_RE;
+                        writeBytesSerialPort(s_frame, 5);
+                    }
+                }
+                break;
+
+            case ESC_RCV:
+                destuffed[i] = byte ^ 0x20;
+                i++;
+                state = BCC1_OK;
+                break;
+
+            default:
+                break;
+        }
+    }
+
+    free(destuffed);
+    return i-2;
 }
 
 ////////////////////////////////////////////////
@@ -395,7 +485,7 @@ int llread(unsigned char *packet)
 ////////////////////////////////////////////////
 int llclose()
 {
-    // TODO: Implement this function
+    
 
     return 0;
 }
