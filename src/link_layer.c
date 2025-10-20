@@ -130,7 +130,7 @@ int llopen(LinkLayer connectionParameters)
     printf("[llopen] Initializing link on port %s (baud=%d)\n", connectionParameters.serialPort, connectionParameters.baudRate);
 
     if (openSerialPort(connectionParameters.serialPort, connectionParameters.baudRate) < 0){
-        pperror("[llopen] Error opening serial port");
+        perror("[llopen] Error opening serial port");
         exit(-1);
     }
 
@@ -168,7 +168,7 @@ int llopen(LinkLayer connectionParameters)
                     case START:
                         if (byte == FLAG) {
                             state = FLAG_RCV;
-                            printf("[readControlFrame] FLAG received (start of frame)\n");
+                            printf("[llopen] FLAG received (start of frame)\n");
                         }
                         break;
                     case FLAG_RCV:
@@ -350,7 +350,7 @@ int llwrite(const unsigned char *buf, int bufSize)
             unsigned char control = readControlFrame();
 
             if(control == (tramaTx ? C_RR0 : C_RR1)) {
-                printf("[llwrite] Received RR%d (ACK)\n", tramaTx ? 1 : 0);
+                printf("[llwrite] Received RR%d (ACK)\n", tramaTx ? 0 : 1);
                 acknowledged = 1;
                 tramaTx = (tramaTx + 1) % 2;
                 alarm(0);
@@ -385,99 +385,137 @@ int llwrite(const unsigned char *buf, int bufSize)
 ////////////////////////////////////////////////
 int llread(unsigned char *packet)
 {
-    unsigned char *destuffed = (unsigned char*)malloc(MAX_PAYLOAD_SIZE + 3);
-    unsigned char s_frame[5];
     unsigned char byte;
     FrameState state = START;
-    unsigned char C, BCC2;
-    int i = 0;
+    unsigned char control = 0;
+    unsigned char BCC2_calc = 0;
+    int packetIndex = 0;
+    int escapeNext = 0;
+    unsigned char receivedBCC2 = 0;
 
-    s_frame[0] = FLAG;
-    s_frame[1] = A_RE;
-    s_frame[4] = FLAG;
+    printf("[llread] Waiting for information frame...\n");
 
-    while(state != STOP_STATE) {
-        if(readByteSerialPort(&byte) != 1) return -1;
+    while(1) {
+        if(readByteSerialPort(&byte) != 1) continue;
+        printf("[llread] Read byte: 0x%02X\n", byte);
 
         switch(state) {
             case START:
-                if(byte == FLAG) state = FLAG_RCV;
+                if(byte == FLAG) {
+                    state = FLAG_RCV;
+                    printf("[llread] FLAG received (start of frame)\n");
+                }
                 break;
 
             case FLAG_RCV:
-                if(byte == A_ER) state = A_RCV;
+                if(byte == A_ER) {
+                    state = A_RCV;
+                    printf("[llread] Received A=0x%02X (expected A_ER)\n", byte);
+                }
                 else if (byte != FLAG) state = START;
                 break;
 
             case A_RCV:
                 if(byte == C_I0 || byte == C_I1) {
                     state = C_RCV;
-                    C = byte;
-                } else if(byte == FLAG) state = FLAG_RCV;
+                    control = byte;
+                    printf("[llread] Received C=0x%02X\n", byte);
+                }
+                else if (byte == FLAG) state = FLAG_RCV;
                 else state = START;
                 break;
 
             case C_RCV:
-                if(byte == (A_ER ^ C)) state = BCC1_OK;
+                if(byte == (A_ER ^ control)) {
+                    state = BCC1_OK;
+                    printf("[llread] BCC1 OK (0x%02X)\n", byte);
+                }
                 else if (byte == FLAG) state = FLAG_RCV;
                 else state = START;
                 break;
 
             case BCC1_OK:
-                if(byte == ESC) {
-                    state = ESC_RCV;
-                } else if(byte == FLAG){
+                if(byte == FLAG) {
+                    state = START;
+                    printf("[llread] Empty frame, ignoring FLAG\n");
+                } 
+                else {
                     state = DATA_RCV;
-                } else {
-                    destuffed[i] = byte;
-                    i++;
+                    packetIndex = 0;
+                    escapeNext = 0;
+                    printf("[llread] Starting payload collection\n");
+                    goto handle_data_byte;
                 }
                 break;
 
             case DATA_RCV:
-                BCC2 = destuffed[i - 1];
-                unsigned char BCC2_check = 0;
-                for (int j = 0; j < i - 1; j++){
-                    BCC2_check = BCC2_check ^ destuffed[j];
-                    packet[j] = destuffed[j];
-                }
-                if(BCC2 == BCC2_check){
+            handle_data_byte:
+                if(byte == FLAG) {
+                    if(packetIndex < 1) { state = START; break; }
+                    receivedBCC2 = packet[packetIndex - 1];
+                    BCC2_calc = 0;
+
+                    for (int i = 0; i < packetIndex - 1; i++) {
+                        BCC2_calc ^= packet[i];
+                    }
+                
+                    packetIndex--;
                     state = STOP_STATE;
-                    if(C == C_I0){
-                        s_frame[2] = C_RR1;
-                        s_frame[3] = C_RR1 ^ A_RE;
-                    } else {
-                        s_frame[2] = C_RR0;
-                        s_frame[3] = C_RR0 ^ A_RE;
-                    }
-                    writeBytesSerialPort(s_frame, 5);
-                } else {
-                    state = START;
-                    if(C == C_I0){
-                        s_frame[2] = C_REJ0;
-                        s_frame[3] = C_REJ0 ^ A_RE;
-                        writeBytesSerialPort(s_frame, 5);
-                    } else {
-                        s_frame[2] = C_REJ1;
-                        s_frame[3] = C_REJ1 ^ A_RE;
-                        writeBytesSerialPort(s_frame, 5);
-                    }
+                    printf("[llread] Received end FLAG\n");
+                }
+                else if(escapeNext) {
+                    byte ^= 0x20;
+                    packet[packetIndex++] = byte;
+                    escapeNext = 0;
+                    printf("[llread] Escaped data byte: 0x%02X, BCC2_calc=0x%02X\n", byte, BCC2_calc);
+                }
+                else if(byte == ESC) {
+                    escapeNext = 1;
+                }
+                else {
+                    packet[packetIndex++] = byte;
+                    printf("[llread] Data byte: 0x%02X, BCC2_calc=0x%02X\n", byte, BCC2_calc);
                 }
                 break;
 
-            case ESC_RCV:
-                destuffed[i] = byte ^ 0x20;
-                i++;
-                state = BCC1_OK;
-                break;
 
             default:
                 break;
         }
+
+        if(state == STOP_STATE) break;
     }
 
-    free(destuffed);
-    return i-2;
+    if(BCC2_calc == receivedBCC2) {
+        printf("[llread] BCC2 OK (0x%02X)\n", receivedBCC2);
+
+        unsigned char response[5];
+        response[0] = FLAG;
+        response[1] = A_RE;
+        response[2] = (tramaRx == 0) ? C_RR1 : C_RR0;
+        response[3] = response[1] ^ response[2];
+        response[4] = FLAG;
+        writeBytesSerialPort(response, 5);
+        printf("[llread] Sent RR%d\n", (tramaRx == 0) ? 1 : 0);
+
+        tramaRx = (tramaRx + 1) % 2;
+        return packetIndex;
+    } 
+    
+    else {
+        printf("[llread] BCC2 ERROR\n");
+
+        unsigned char response[5];
+        response[0] = FLAG;
+        response[1] = A_RE;
+        response[2] = (tramaRx == 0) ? C_REJ0 : C_REJ1;
+        response[3] = response[1] ^ response[2];
+        response[4] = FLAG;
+        writeBytesSerialPort(response, 5);
+        printf("[llread] Sent REJ%d\n", (tramaRx == 0) ? 0 : 1);
+
+        return -1;
+    }
 }
 
 ////////////////////////////////////////////////

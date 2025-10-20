@@ -17,25 +17,35 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
     linkLayer.nRetransmissions = nTries;
     linkLayer.timeout = timeout;
 
+    printf("[applicationLayer] Role: %s | Port: %s | Baud: %d\n", role, serialPort, baudRate);
+
     if(llopen(linkLayer) == -1) {
         perror("Failed to open link layer connection");
         exit(1);
     }
-
-    if(linkLayer.role == LlTx) {
-
-        FILE *file = fopen(filename, "rb");
-        if(!file) {
-            perror("Error opening file");
-            exit(1);
-        }
-
-        fseek(file, 0L, SEEK_END);
-        long int fileSize = ftell(file);
-        fseek(file, 0L, SEEK_SET);
+    else {
+        printf("llopen() successful!\n");
     }
 
-    unsigned int controlPacketSize;
+    if (linkLayer.role == LlTx) {
+        // Transmitter: send a single byte
+        unsigned char byteToSend = 0x7D; // ASCII 'B' for testing
+        if (llwrite(&byteToSend, 1) < 0) {
+            printf("llwrite failed\n");
+        } else {
+            printf("llwrite successful!\n");
+        }
+    } 
+    else if (linkLayer.role == LlRx) {
+        // Receiver: read a single byte
+        unsigned char receivedByte;
+        int n = llread(&receivedByte);
+        if (n > 0) {
+            printf("Received byte: 0x%02X ('%c')\n", receivedByte, receivedByte);
+        } else {
+            printf("llread failed\n");
+        }
+    }
 
 }
 
@@ -72,7 +82,12 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
 
 unsigned char* encodeControlPacket(const unsigned int c, const char* filename, long int filesize, unsigned int* packetsize) {
 
-    const int L1 = (int) ceil(log2f((float) filesize+1) / 8.0);
+    unsigned int tmp = filesize;
+    int L1 = 0;
+    do {
+        L1++;
+        tmp >>= 8;
+    } while (tmp > 0);
     const int L2 = strlen(filename);
 
     *packetsize = 1 + 2 + L1 + 2 + L2;
