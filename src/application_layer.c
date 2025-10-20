@@ -35,13 +35,27 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
         } else {
             printf("llwrite successful!\n");
         }
+        if (llwrite(&byteToSend, 1) < 0) {
+            printf("llwrite failed\n");
+        } else {
+            printf("llwrite successful!\n");
+        }
+        if (llwrite(&byteToSend, 1) < 0) {
+            printf("llwrite failed\n");
+        } else {
+            printf("llwrite successful!\n");
+        }
     } 
     else if (linkLayer.role == LlRx) {
         // Receiver: read a single byte
-        unsigned char receivedByte;
-        int n = llread(&receivedByte);
-        if (n > 0) {
-            printf("Received byte: 0x%02X ('%c')\n", receivedByte, receivedByte);
+        unsigned char receivedByte1, receivedByte2, receivedByte3;
+        int n = llread(&receivedByte1);
+        int m = llread(&receivedByte2);
+        int k = llread(&receivedByte3);
+        if (n > 0 || m > 0 || k > 0) {
+            printf("Received byte: 0x%02X ('%c')\n", receivedByte1, receivedByte1);
+            printf("Received byte: 0x%02X ('%c')\n", receivedByte2, receivedByte2);
+            printf("Received byte: 0x%02X ('%c')\n", receivedByte3, receivedByte3);
         } else {
             printf("llread failed\n");
         }
