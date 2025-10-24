@@ -282,11 +282,6 @@ int llopen(LinkLayer connectionParameters)
 ////////////////////////////////////////////////
 int llwrite(const unsigned char *buf, int bufSize)
 {
-    if(bufSize > MAX_PAYLOAD_SIZE) {
-        printf("[llwrite] Error: Payload too large (%d bytes > %d)\n", bufSize, MAX_PAYLOAD_SIZE);
-        return -1;
-    }
-
     int frameSize = 4 + bufSize + 2;
     unsigned char *frame = (unsigned char*)malloc(frameSize);
     

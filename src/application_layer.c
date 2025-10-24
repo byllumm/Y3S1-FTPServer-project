@@ -28,79 +28,177 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
     }
 
     if (linkLayer.role == LlTx) {
-        // Transmitter: send a single byte
-        unsigned char byteToSend = 0x7D; // ASCII 'B' for testing
-        if (llwrite(&byteToSend, 1) < 0) {
-            printf("llwrite failed\n");
-        } else {
-            printf("llwrite successful!\n");
+
+        FILE *file = fopen(filename, "rb");
+        if(!file) {
+            perror("Error opening file");
+            exit(1);
         }
-        if (llwrite(&byteToSend, 1) < 0) {
-            printf("llwrite failed\n");
-        } else {
-            printf("llwrite successful!\n");
+
+        fseek(file, 0L, SEEK_END);
+        long int fileSize = ftell(file);
+        fseek(file, 0L, SEEK_SET);
+
+        unsigned int controlPacketSize;
+        unsigned char* startControlPacket = encodeControlPacket(1, filename, fileSize, &controlPacketSize);
+        if(llwrite(startControlPacket, controlPacketSize) == -1) {
+            printf("Error in writing start packet\n");
+            fclose(file);
+            free(startControlPacket);
+            exit(1);
         }
-        if (llwrite(&byteToSend, 1) < 0) {
-            printf("llwrite failed\n");
-        } else {
-            printf("llwrite successful!\n");
+        free(startControlPacket);
+
+        unsigned char buffer[MAX_PAYLOAD_SIZE];
+        int bytesRead;
+        long int totalBytesSent = 0;
+
+        while((bytesRead = fread(buffer, 1, MAX_PAYLOAD_SIZE, file)) > 0) {
+            unsigned int dataPacketSize;
+            unsigned char* dataPacket = encodeDataPacket(buffer, bytesRead, &dataPacketSize);
+
+            if(!dataPacket) {
+                printf("Failed to encode data packet\n");
+                fclose(file);
+                exit(1);
+            }
+
+            if(llwrite(dataPacket, dataPacketSize) == -1) {
+                printf("Failed to send data packet\n");
+                free(dataPacket);
+                fclose(file);
+                exit(1);
+            }
+
+            free(dataPacket);
+
+            totalBytesSent += bytesRead;
+
+            printf("\rProgress: %.1f%% (%ld/%ld bytes)",
+                100.0 * totalBytesSent / fileSize,
+                totalBytesSent,
+                fileSize);
+            fflush(stdout);
         }
+
+        if (ferror(file)) {
+            perror("Error reading from file");
+            fclose(file);
+            exit(1);
+        }
+
+        unsigned char* endControlPacket = encodeControlPacket(3, filename, fileSize, &controlPacketSize);
+        if(llwrite(endControlPacket, controlPacketSize) == -1) {
+            printf("Error in writing end packet\n");
+            fclose(file);
+            free(endControlPacket);
+            exit(1);
+        }
+
+        free(endControlPacket);
+
+        fclose(file);
+
+        if(llclose() == -1) {
+            perror("Failed to close link layer connection");
+            exit(1);
+        }
+        else {
+            printf("llclose() successful!\n");
+        }
+        
     } 
+
     else if (linkLayer.role == LlRx) {
-        // Receiver: read a single byte
-        unsigned char receivedByte1, receivedByte2, receivedByte3;
-        int n = llread(&receivedByte1);
-        int m = llread(&receivedByte2);
-        int k = llread(&receivedByte3);
-        if (n > 0 || m > 0 || k > 0) {
-            printf("Received byte: 0x%02X ('%c')\n", receivedByte1, receivedByte1);
-            printf("Received byte: 0x%02X ('%c')\n", receivedByte2, receivedByte2);
-            printf("Received byte: 0x%02X ('%c')\n", receivedByte3, receivedByte3);
+        unsigned char packet[MAX_PAYLOAD_SIZE + 10];
+        int packetSize;
+
+        do {
+            packetSize = llread(packet);
+        } while (packetSize < 0); 
+
+        unsigned long int fileSize = 0;
+        unsigned char* receivedFilename = decodeControlPacket(packet, packetSize, &fileSize);
+        if (!receivedFilename) {
+            fprintf(stderr, "Failed to decode start control packet\n");
+            llclose();
+            exit(1);
+        }
+
+        printf("Receiving file: %s (%lu bytes)\n", receivedFilename, fileSize);
+
+        FILE *file = fopen((char*) receivedFilename, "wb"); // use argument filename as destination
+        if (!file) {
+            perror("Error creating output file");
+            free(receivedFilename);
+            fclose(file);
+            exit(1);
+        }
+
+        long int totalBytesReceived = 0;
+        int done = 0;
+
+        while (!done) {
+            do {
+                packetSize = llread(packet);
+            } while (packetSize < 0);
+
+            unsigned char packetType = packet[0];
+
+            if (packetType == 2) {
+                unsigned int dataSize;
+                unsigned char* data = decodeDataPacket(packet, packetSize, &dataSize);
+
+                if (!data) {
+                    fprintf(stderr, "Failed to decode data packet\n");
+                    fclose(file);
+                    free(receivedFilename);
+                    llclose();
+                    exit(1);
+                }
+
+                size_t written = fwrite(data, 1, dataSize, file);
+                if (written < dataSize) {
+                    perror("Error writing to output file");
+                    free(data);
+                    fclose(file);
+                    free(receivedFilename);
+                    llclose();
+                    exit(1);
+                }
+
+                totalBytesReceived += dataSize;
+                free(data);
+
+                printf("\rProgress: %.1f%% (%ld/%lu bytes)",
+                    100.0 * totalBytesReceived / fileSize,
+                    totalBytesReceived, fileSize);
+                fflush(stdout);
+            }
+
+            else if (packetType == 3) {
+                done = 1;
+            }
+
+            else {
+                fprintf(stderr, "Unknown packet type: %u\n", packetType);
+            }
+        }
+
+        printf("\nFile reception complete!\n");
+
+        fclose(file);
+        free(receivedFilename);
+
+        // 3️⃣ --- Close link ---
+        if (llclose() == -1) {
+            perror("Failed to close link layer connection");
+            exit(1);
         } else {
-            printf("llread failed\n");
+            printf("llclose() successful!\n");
         }
     }
-
-    if(llclose() == -1) {
-        perror("Failed to close link layer connection");
-        exit(1);
-    }
-    else {
-        printf("llclose() successful!\n");
-    }
-
 }
-
-
-// unsigned int cpSize; 
-// unsigned char *startPacket = getControlPacket(2, filename, fileSize, &cpSize); // 2=start 
-// if (llwrite(startPacket, cpSize) == -1) { 
-//     fprintf(stderr, "Failed to send start packet\n"); 
-//     free(startPacket); 
-//     fclose(file); 
-//     llclose(); 
-//     return; 
-// } 
-// free(startPacket); 
-// // Send DATA packets 
-// unsigned char buffer[MAX_DATA_SIZE]; 
-// int bytesRead; 
-// while ((bytesRead = fread(buffer, 1, MAX_DATA_SIZE, file)) > 0) { 
-//     if (llwrite(buffer, bytesRead) == -1) { 
-//         fprintf(stderr, "Failed to send data packet\n"); 
-//         fclose(file); llclose(); 
-//         return; 
-//     } 
-// } 
-// // Send END control packet 
-// unsigned char *endPacket = getControlPacket(3, filename, fileSize, &cpSize); // 3=end 
-// if (llwrite(endPacket, cpSize) == -1) { 
-//     fprintf(stderr, "Failed to send end packet\n"); 
-// } 
-// free(endPacket); 
-// fclose(file);
-
-
 
 unsigned char* encodeControlPacket(const unsigned int c, const char* filename, long int filesize, unsigned int* packetsize) {
 
