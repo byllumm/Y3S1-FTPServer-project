@@ -6,6 +6,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
+#include <time.h>
+#include <unistd.h>
 
 // MISC
 #define _POSIX_SOURCE 1 // POSIX compliant source
@@ -43,6 +45,39 @@ int tramaRx = 0;
 int retransmissions = 0;
 int timeout = 0;
 LinkLayerRole role;
+
+/* --- Simulation Parameters --- */
+double sim_p_header_error = 0.0;
+double sim_p_data_error   = 0.0;
+unsigned int sim_prop_delay_ms = 0;
+
+/* Initialize simulation (call this once from main or application layer) */
+void sim_init(double p_header, double p_data, unsigned int prop_delay_ms, unsigned int seed) {
+    sim_p_header_error = p_header;
+    sim_p_data_error = p_data;
+    sim_prop_delay_ms = prop_delay_ms;
+    if (seed == 0)
+        seed = (unsigned int)time(NULL) ^ getpid();
+    srand(seed);
+}
+
+/* Delay to simulate propagation */
+static inline void sim_propagation_delay(void) {
+    if (sim_prop_delay_ms == 0) return;
+    struct timespec ts;
+    ts.tv_sec  = sim_prop_delay_ms / 1000;
+    ts.tv_nsec = (long)((sim_prop_delay_ms % 1000) * 1000000UL);
+    nanosleep(&ts, NULL);
+}
+
+/* Random boolean helpers */
+static inline int sim_header_error(void) {
+    return (sim_p_header_error > 0.0 && ((double)rand() / RAND_MAX) < sim_p_header_error);
+}
+static inline int sim_data_error(void) {
+    return (sim_p_data_error > 0.0 && ((double)rand() / RAND_MAX) < sim_p_data_error);
+}
+
 
 void alarmHandler(int signal) {
     alarmEnabled = FALSE;
@@ -290,14 +325,11 @@ int llwrite(const unsigned char *buf, int bufSize)
     frame[2] = tramaTx ? C_I1 : C_I0;
     frame[3] = frame[1] ^ frame[2];
 
-    printf("[llwrite] Building frame: A=0x%02X, C=0x%02X, BCC1=0x%02X\n", frame[1], frame[2], frame[3]);
 
     unsigned char BCC2 = buf[0];
     for(int i = 1; i < bufSize; i++) {
         BCC2 ^= buf[i];
     }
-
-    printf("[llwrite] BCC2 without stuffing: BCC2=0x%02X\n", BCC2);
 
     int j = 4;
 
@@ -308,7 +340,6 @@ int llwrite(const unsigned char *buf, int bufSize)
             frame = realloc(frame, ++frameSize);
             frame[j++] = ESC;
             frame[j++] = byte ^ 0x20;
-            printf("[llwrite] Byte stuffing: original=0x%02X -> ESC 0x%02X\n", byte, byte ^ 0x20);
         }
         else {
             frame[j++] = byte;
@@ -319,25 +350,21 @@ int llwrite(const unsigned char *buf, int bufSize)
         frame = realloc(frame, ++frameSize);
         frame[j++] = ESC;
         frame[j++] = BCC2 ^ 0x20;
-        printf("[llwrite] BCC2 stuffed: original=0x%02X -> ESC 0x%02X\n", BCC2, BCC2 ^ 0x20);
     }
     else {
         frame[j++] = BCC2;
     }
 
     frame[j++] = FLAG;
-    printf("[llwrite] Frame complete, total size = %d bytes\n", j);
 
     int retries = retransmissions;
     int acknowledged = 0;
 
     while(retries > 0 && !acknowledged) {
-        printf("[llwrite] Sending frame (try #%d)\n", retransmissions - retries + 1);
         
         writeBytesSerialPort(frame, j);
         alarmEnabled = TRUE;
         alarm(timeout);
-        printf("[llwrite] Waiting for ACK/REJ (timeout = %ds)\n", timeout);
 
         while(alarmEnabled && !acknowledged) {
             unsigned char control = readControlFrame();
@@ -385,24 +412,20 @@ int llread(unsigned char *packet)
     int escapeNext = 0;
     unsigned char BCC2_calc = 0, receivedBCC2 = 0;
 
-    printf("[llread] Waiting for information frame...\n");
-
     while(state != STOP_STATE) {
         if(readByteSerialPort(&byte) != 1) continue;
-        printf("[llread] Read byte: 0x%02X\n", byte);
 
         switch(state) {
             case START:
                 if(byte == FLAG) {
                     state = FLAG_RCV;
-                    printf("[llread] FLAG received (start of frame)\n");
                 }
                 break;
 
             case FLAG_RCV:
+                sim_propagation_delay();
                 if(byte == A_ER) {
                     state = A_RCV;
-                    printf("[llread] Received A=0x%02X (expected A_ER)\n", byte);
                 }
                 else if (byte != FLAG) state = START;
                 break;
@@ -411,16 +434,30 @@ int llread(unsigned char *packet)
                 if(byte == C_I0 || byte == C_I1) {
                     state = C_RCV;
                     control = byte;
-                    printf("[llread] Received C=0x%02X\n", byte);
                 }
                 else if (byte == FLAG) state = FLAG_RCV;
                 else state = START;
                 break;
 
             case C_RCV:
-                if(byte == (A_ER ^ control)) {
+                if (byte == (A_ER ^ control)) {
+                    /* --- Simulate possible header error --- */
+                    if (sim_header_error()) {
+                        printf("[sim] Simulating HEADER error -> sending REJ\n");
+
+                        unsigned char response[5];
+                        response[0] = FLAG;
+                        response[1] = A_RE;
+                        response[2] = (tramaRx == 0) ? C_REJ0 : C_REJ1;
+                        response[3] = response[1] ^ response[2];
+                        response[4] = FLAG;
+                        writeBytesSerialPort(response, 5);
+
+                        return -1;  // tell caller frame failed (forces retransmission)
+                    }
+
+                    /* --- Normal behavior (no simulated error) --- */
                     state = BCC1_OK;
-                    printf("[llread] BCC1 OK (0x%02X)\n", byte);
                 }
                 else if (byte == FLAG) state = FLAG_RCV;
                 else state = START;
@@ -429,13 +466,11 @@ int llread(unsigned char *packet)
             case BCC1_OK:
                 if(byte == FLAG) {
                     state = START;
-                    printf("[llread] Empty frame, ignoring FLAG\n");
                 } 
                 else {
                     state = DATA_RCV;
                     packetIndex = 0;
                     escapeNext = 0;
-                    printf("[llread] Starting payload collection\n");
                     goto handle_data_byte;
                 }
                 break;
@@ -445,28 +480,33 @@ int llread(unsigned char *packet)
                 if(byte == FLAG) {
                     if(packetIndex < 1) { state = START; break; }
                     receivedBCC2 = packet[packetIndex - 1];
-                    BCC2_calc = 0;
+                    packetIndex--;
 
-                    for (int i = 0; i < packetIndex - 1; i++) {
+                    if (sim_data_error() && packetIndex > 0) {
+                        int idx = rand() % packetIndex; // pick random data byte
+                        unsigned char old = packet[idx];
+                        packet[idx] = old ^ 0xFF; // flip all bits to guarantee corruption
+                        printf("[sim] Simulated DATA error: byte %d changed 0x%02X -> 0x%02X\n",
+                            idx, old, packet[idx]);
+                    }
+
+                    BCC2_calc = 0;
+                    for (int i = 0; i < packetIndex; i++) {
                         BCC2_calc ^= packet[i];
                     }
                 
-                    packetIndex--;
                     state = STOP_STATE;
-                    printf("[llread] Received end FLAG\n");
                 }
                 else if(escapeNext) {
                     byte ^= 0x20;
                     packet[packetIndex++] = byte;
                     escapeNext = 0;
-                    printf("[llread] Escaped data byte: 0x%02X\n", byte, BCC2_calc);
                 }
                 else if(byte == ESC) {
                     escapeNext = 1;
                 }
                 else {
                     packet[packetIndex++] = byte;
-                    printf("[llread] Data byte: 0x%02X\n", byte, BCC2_calc);
                 }
                 break;
 
@@ -477,7 +517,6 @@ int llread(unsigned char *packet)
     }
 
     if(BCC2_calc == receivedBCC2) {
-        printf("[llread] BCC2 OK (0x%02X)\n", receivedBCC2);
 
         unsigned char response[5];
         response[0] = FLAG;
@@ -486,7 +525,6 @@ int llread(unsigned char *packet)
         response[3] = response[1] ^ response[2];
         response[4] = FLAG;
         writeBytesSerialPort(response, 5);
-        printf("[llread] Sent RR%d\n", (tramaRx == 0) ? 1 : 0);
 
         tramaRx = (tramaRx + 1) % 2;
         return packetIndex;

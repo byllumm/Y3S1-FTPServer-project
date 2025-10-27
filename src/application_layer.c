@@ -4,6 +4,16 @@
 #include "link_layer.h"
 
 #include <stdio.h>
+#include <time.h>
+
+double now_seconds(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        perror("clock_gettime failed");
+        return 0.0;
+    }
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
 
 unsigned char* encodeControlPacket(const unsigned int c, const char* filename, long int filesize, unsigned int* packetsize) {
 
@@ -121,6 +131,9 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
 
     printf("[applicationLayer] Role: %s | Port: %s | Baud: %d\n", role, serialPort, baudRate);
 
+    sim_init(0.0, 0.1, 100, 0);
+    double t0 = now_seconds();
+
     if(llopen(linkLayer) == -1) {
         perror("Failed to open link layer connection");
         exit(1);
@@ -208,6 +221,20 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
         else {
             printf("llclose() successful!\n");
         }
+
+        double t1 = now_seconds();
+        double duration = t1 - t0;
+
+        double totalBits = totalBytesSent * 8.0;
+        double R = totalBits / duration;
+        double S = R / (double) linkLayer.baudRate;
+
+        printf("\n--- Link Performance ---\n");
+        printf("  Duration: %.3f s\n", duration);
+        printf("  Bytes transferred: %ld\n", totalBytesSent);
+        printf("  Bitrate (R): %.1f bps\n", R);
+        printf("  Efficiency (S): %.4f\n", S);
+        printf("-------------------------\n\n");
         
     } 
 
@@ -298,5 +325,6 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
         } else {
             printf("llclose() successful!\n");
         }
+
     }
 }
