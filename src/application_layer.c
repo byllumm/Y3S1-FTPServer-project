@@ -4,16 +4,6 @@
 #include "link_layer.h"
 
 #include <stdio.h>
-#include <time.h>
-
-double now_seconds(void) {
-    struct timespec ts;
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
-        perror("clock_gettime failed");
-        return 0.0;
-    }
-    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
-}
 
 unsigned char* encodeControlPacket(const unsigned int c, const char* filename, long int filesize, unsigned int* packetsize) {
 
@@ -129,17 +119,9 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
     linkLayer.nRetransmissions = nTries;
     linkLayer.timeout = timeout;
 
-    printf("[applicationLayer] Role: %s | Port: %s | Baud: %d\n", role, serialPort, baudRate);
-
-    sim_init(0.0, 0.1, 100, 0);
-    double t0 = now_seconds();
-
     if(llopen(linkLayer) == -1) {
         perror("Failed to open link layer connection");
         exit(1);
-    }
-    else {
-        printf("llopen() successful!\n");
     }
 
     if (linkLayer.role == LlTx) {
@@ -157,9 +139,10 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
         unsigned int controlPacketSize;
         unsigned char* startControlPacket = encodeControlPacket(1, filename, fileSize, &controlPacketSize);
         if(llwrite(startControlPacket, controlPacketSize) == -1) {
-            printf("Error in writing start packet\n");
-            fclose(file);
+            perror("Error in writing start packet");
             free(startControlPacket);
+            fclose(file);
+            llclose();
             exit(1);
         }
         free(startControlPacket);
@@ -173,15 +156,17 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
             unsigned char* dataPacket = encodeDataPacket(buffer, bytesRead, &dataPacketSize);
 
             if(!dataPacket) {
-                printf("Failed to encode data packet\n");
+                perror("Failed to encode data packet");
                 fclose(file);
+                llclose();
                 exit(1);
             }
 
             if(llwrite(dataPacket, dataPacketSize) == -1) {
-                printf("Failed to send data packet\n");
+                perror("Failed to send data packet");
                 free(dataPacket);
                 fclose(file);
+                llclose();
                 exit(1);
             }
 
@@ -204,38 +189,15 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
 
         unsigned char* endControlPacket = encodeControlPacket(3, filename, fileSize, &controlPacketSize);
         if(llwrite(endControlPacket, controlPacketSize) == -1) {
-            printf("Error in writing end packet\n");
-            fclose(file);
+            perror("Error in writing end packet");
             free(endControlPacket);
+            fclose(file);
+            llclose();
             exit(1);
         }
-
         free(endControlPacket);
 
         fclose(file);
-
-        if(llclose() == -1) {
-            perror("Failed to close link layer connection");
-            exit(1);
-        }
-        else {
-            printf("llclose() successful!\n");
-        }
-
-        double t1 = now_seconds();
-        double duration = t1 - t0;
-
-        double totalBits = totalBytesSent * 8.0;
-        double R = totalBits / duration;
-        double S = R / (double) linkLayer.baudRate;
-
-        printf("\n--- Link Performance ---\n");
-        printf("  Duration: %.3f s\n", duration);
-        printf("  Bytes transferred: %ld\n", totalBytesSent);
-        printf("  Bitrate (R): %.1f bps\n", R);
-        printf("  Efficiency (S): %.4f\n", S);
-        printf("-------------------------\n\n");
-        
     } 
 
     else if (linkLayer.role == LlRx) {
@@ -249,18 +211,17 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
         unsigned long int fileSize = 0;
         unsigned char* receivedFilename = decodeControlPacket(packet, packetSize, &fileSize);
         if (!receivedFilename) {
-            fprintf(stderr, "Failed to decode start control packet\n");
+            perror("Failed to decode start control packet\n");
             llclose();
             exit(1);
         }
-
-        printf("Receiving file: %s (%lu bytes)\n", receivedFilename, fileSize);
 
         FILE *file = fopen((char*) filename, "wb");
         if (!file) {
             perror("Error creating output file");
             free(receivedFilename);
             fclose(file);
+            llclose();
             exit(1);
         }
 
@@ -279,7 +240,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
                 unsigned char* data = decodeDataPacket(packet, packetSize, &dataSize);
 
                 if (!data) {
-                    fprintf(stderr, "Failed to decode data packet\n");
+                    perror("Failed to decode data packet");
                     fclose(file);
                     free(receivedFilename);
                     llclose();
@@ -314,17 +275,13 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
             }
         }
 
-        printf("\nFile reception complete!\n");
-
         fclose(file);
+
         free(receivedFilename);
-
-        if (llclose() == -1) {
-            perror("Failed to close link layer connection");
-            exit(1);
-        } else {
-            printf("llclose() successful!\n");
-        }
-
     }
+
+    if (llclose() == -1) {
+        perror("Failed to close link layer connection");
+        exit(1);
+    } 
 }
