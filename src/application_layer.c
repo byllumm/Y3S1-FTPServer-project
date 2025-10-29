@@ -142,7 +142,6 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
             perror("Error in writing start packet");
             free(startControlPacket);
             fclose(file);
-            llclose();
             exit(1);
         }
         free(startControlPacket);
@@ -158,7 +157,6 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
             if(!dataPacket) {
                 perror("Failed to encode data packet");
                 fclose(file);
-                llclose();
                 exit(1);
             }
 
@@ -166,7 +164,6 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
                 perror("Failed to send data packet");
                 free(dataPacket);
                 fclose(file);
-                llclose();
                 exit(1);
             }
 
@@ -174,7 +171,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
 
             totalBytesSent += bytesRead;
 
-            printf("\rProgress: %.1f%% (%ld/%ld bytes)",
+            printf("\rProgress: %.1f%% (%ld/%ld bytes)\n",
                 100.0 * totalBytesSent / fileSize,
                 totalBytesSent,
                 fileSize);
@@ -192,7 +189,6 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
             perror("Error in writing end packet");
             free(endControlPacket);
             fclose(file);
-            llclose();
             exit(1);
         }
         free(endControlPacket);
@@ -211,7 +207,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
         unsigned long int fileSize = 0;
         unsigned char* receivedFilename = decodeControlPacket(packet, packetSize, &fileSize);
         if (!receivedFilename) {
-            perror("Failed to decode start control packet\n");
+            perror("Failed to decode start control packet");
             llclose();
             exit(1);
         }
@@ -221,7 +217,6 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
             perror("Error creating output file");
             free(receivedFilename);
             fclose(file);
-            llclose();
             exit(1);
         }
 
@@ -260,7 +255,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
                 totalBytesReceived += dataSize;
                 free(data);
 
-                printf("\rProgress: %.1f%% (%ld/%lu bytes)",
+                printf("\rProgress: %.1f%% (%ld/%lu bytes)\n",
                     100.0 * totalBytesReceived / fileSize,
                     totalBytesReceived, fileSize);
                 fflush(stdout);

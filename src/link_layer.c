@@ -99,8 +99,6 @@ unsigned char readControlFrame() {
         }
     }
 
-    if (state != STOP_STATE) printf("[readControlFrame] Timeout or alarm triggered — control frame incomplete\n");
-
     return controlField;
 }
 
@@ -291,7 +289,7 @@ int llwrite(const unsigned char *buf, int bufSize)
                 tramaTx = (tramaTx + 1) % 2;
                 alarm(0);
             }
-            else if ((control == (tramaTx ? C_REJ1 : C_REJ0)) || (control == (tramaTx ? C_RR1 : C_RR0))) {
+            else if (control == (tramaTx ? C_REJ1 : C_REJ0)) {
                 printf("[llwrite] Received REJ%d — retransmitting\n", tramaTx ? 1 : 0);
                 break;
             }
@@ -424,7 +422,6 @@ int llread(unsigned char *packet)
         } 
         
         else {
-
             unsigned char response[5];
             response[0] = FLAG;
             response[1] = A_RE;
@@ -432,7 +429,7 @@ int llread(unsigned char *packet)
             response[3] = response[1] ^ response[2];
             response[4] = FLAG;
             writeBytesSerialPort(response, 5);
-            printf("[llread] Duplicate I%d detected, re-sent RR%d\n", receivedSeq, (tramaRx == 0) ? 1 : 0);
+            printf("[llread] Duplicate I%d detected, re-sent RR%d\n", receivedSeq, (tramaRx == 0) ? 0 : 1);
 
             return -1;
         }
@@ -441,11 +438,11 @@ int llread(unsigned char *packet)
         unsigned char response[5];
         response[0] = FLAG;
         response[1] = A_RE;
-        response[2] = (tramaRx == 0) ? C_REJ1 : C_REJ0;
+        response[2] = (tramaRx == 0) ? C_REJ0 : C_REJ1;
         response[3] = response[1] ^ response[2];
         response[4] = FLAG;
         writeBytesSerialPort(response, 5);
-        printf("[llread] Sent REJ%d (bad BCC2)\n", (tramaRx == 0) ? 1 : 0);
+        printf("[llread] Sent REJ%d (bad BCC2)\n", (tramaRx == 0) ? 0 : 1);
         return -1;
     }
 }
