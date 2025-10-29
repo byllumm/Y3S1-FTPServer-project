@@ -291,6 +291,7 @@ int llwrite(const unsigned char *buf, int bufSize)
             }
             else if (control == (tramaTx ? C_REJ1 : C_REJ0)) {
                 printf("[llwrite] Received REJ%d — retransmitting\n", tramaTx ? 1 : 0);
+                alarm(0);
                 break;
             }
             else continue;
