@@ -79,7 +79,6 @@ unsigned char readControlFrame() {
                         (byte == C_RR1) ? "RR1" :
                         (byte == C_REJ0) ? "REJ0" :
                         (byte == C_REJ1) ? "REJ1" : "UNKNOWN";
-                    printf("[readControlFrame] C=0x%02X (%s) detected\n", byte, type);
                 }
                 else if (byte == FLAG) state = FLAG_RCV;
                 else state = START;
