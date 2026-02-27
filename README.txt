@@ -31,8 +31,3 @@ Instructions to Run the Project
     3.3 Check if the file received matches the file sent, using the diff Linux command or using the Makefile target:
         (Option 1) $ diff -s penguin.gif penguin-received.gif
         (Option 2) $ make check_files
-
-4. Test the protocol with cable disconnections and noise
-    4.1. Run receiver and transmitter again
-    4.2. Quickly move to the cable program console and press 0 for unplugging the cable, 2 to add noise, and 1 to normal
-    4.3. Check if the file received matches the file sent, even with cable disconnections or with noise
